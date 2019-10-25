@@ -1,0 +1,450 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "AdminPassword": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The password for localadmin."
+      }
+    },
+    "AdminUsername": {
+      "defaultValue": "localadmin",
+      "type": "string"
+    },
+    "configFunctionName": {
+      "defaultValue": "configdc1",
+      "type": "string"
+    },
+    "configScriptFileName": {
+      "type": "string",
+      "defaultValue": "configdc1.ps1"
+    },
+    "configZipFileUrl": {
+      "type": "string",
+      "defaultValue": "https://github.com/njpatel54/wplus-aag/blob/master/configdc1ps12.zip",
+      "metadata": {
+        "description": "The URL of configdc1ps12.zip"
+      }
+    },
+    "domainName": {
+      "type": "string",
+      "metadata": {
+        "description": "Provide your AD Forest Domain name"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "The location in which the Azure Storage resources should be deployed."
+      }
+    },
+    "dcvmName": {
+      "type": "string",
+      "defaultValue": "dc1",
+      "metadata": {
+        "description": "The name of Primary Domain Controller of this PoC."
+      }
+    },
+    "jumpboxvmName": {
+      "type": "string",
+      "defaultValue": "JumpBox-1",
+      "metadata": {
+        "description": "The name of Jumpbox VM for this PoC."
+      }
+    },
+    "appsrv1vmName": {
+      "type": "string",
+      "defaultValue": "Appsrv-1",
+      "metadata": {
+        "description": "The name of App Server VM for this PoC."
+      }
+    },
+    "jumpSNNSGName": {
+      "type": "string",
+      "defaultValue": "jumpSNNSGName",
+      "metadata": {
+        "description": "Name for the NSG used to allow RDP, HTTP and HTPPS."
+      }
+    }
+  },
+  "variables": {
+    "diskType": "StandardSSD_LRS",
+    "imageReference": "[variables('osType')]",
+    "location": "[resourceGroup().location]",
+    "dc1nicName": "dc1-nic",
+    "jumpbox1nicName": "jumpxbox1-nic",
+    "appsrv1nicName": "aapsrv1-nic",
+    "dc1OSDiskName": "dc1-osdisk",
+    "jumpbox1OSDiskName": "jumpbox-osdisk",
+    "appsrv1OSDiskName": "aapsrv1-osdisk",
+    "osType": {
+      "offer": "WindowsServer",
+      "publisher": "MicrosoftWindowsServer",
+      "sku": "2016-Datacenter",
+      "version": "latest"
+    },
+    "publicIPAddressName": "Jumpbox1-pip",
+    "publicIPAddressType": "Dynamic",
+    "vhdStorageAccountName": "[concat('vhdstorage', uniqueString(resourceGroup().id))]",
+    "vhdStorageContainerName": "vhds",
+    "vhdStorageType": "Standard_LRS",
+    "vmSize": "Standard_D2s_v3",
+    "virtualNetworkName": "emulated-on-premises-vnet",
+    "addressPrefix": "10.152.101.0/24",
+    "infraSubnetName": "adds-svc-sn",
+    "infraSubnetPrefix": "10.152.101.0/27",
+    "jumpboxSubnetName": "jumpbox-sn",
+    "jumpboxSubnetPrefix": "10.152.101.32/27",
+    "subnetRef": "[concat(variables('vnetId'), '/subnets/', variables('infraSubnetName'))]",
+    "vnetId": "[resourceId('Microsoft.Network/virtualNetworks', variables('virtualNetworkName'))]",
+    "jumpxBoxsubnetRef": "[concat(variables('vnetId'), '/subnets/', variables('jumpboxSubnetName'))]"
+  },
+  "resources": [
+    {
+      "apiVersion": "2015-06-15",
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "name": "[parameters('jumpSNNSGName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "displayName": "NSG - Jumpbox Subnet"
+      },
+      "properties": {
+        "securityRules": [
+          {
+            "name": "rdp-rule",
+            "properties": {
+              "description": "Allow RDP",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "3389",
+              "sourceAddressPrefix": "Internet",
+              "destinationAddressPrefix": "*",
+              "access": "Allow",
+              "priority": 100,
+              "direction": "Inbound"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "2016-03-30",
+      "type": "Microsoft.Network/virtualNetworks",
+      "name": "[variables('virtualNetworkName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups/', parameters('jumpSNNSGName'))]"
+      ],
+      "tags": {
+        "displayName": "VirtualNetwork"
+      },
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[variables('addressPrefix')]"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('infraSubnetName')]",
+            "properties": {
+              "addressPrefix": "[variables('infraSubnetPrefix')]"
+            }
+          },
+          {
+            "name": "[variables('jumpboxSubnetName')]",
+            "properties": {
+              "addressPrefix": "[variables('jumpboxSubnetPrefix')]",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('jumpSNNSGName'))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "2016-03-30",
+      "type": "Microsoft.Network/publicIPAddresses",
+      "name": "[variables('publicIPAddressName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "displayName": "Jumpbox-pip"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "[variables('publicIPAddressType')]"
+      }
+    },
+    {
+      "apiVersion": "2016-03-30",
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[variables('dc1nicName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "displayName": "DC1-nic"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses/', variables('publicIPAddressName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks/', variables('virtualNetworkName'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "subnet": {
+                "id": "[variables('subnetRef')]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "2016-03-30",
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[variables('jumpbox1nicName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "displayName": "Jumpbox-nic"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses/', variables('publicIPAddressName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks/', variables('virtualNetworkName'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIPAddressName'))]"
+              },
+              "subnet": {
+                "id": "[variables('jumpxBoxsubnetRef')]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "2016-03-30",
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[variables('appsrv1nicName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "displayName": "Appsrv1-nic"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses/', variables('publicIPAddressName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks/', variables('virtualNetworkName'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "subnet": {
+                "id": "[variables('subnetRef')]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "2018-06-01",
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[parameters('dcvmName')]",
+      "location": "[variables('location')]",
+      "dependsOn": [
+        "[concat('Microsoft.Network/networkInterfaces/', variables('dc1nicName'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[variables('vmSize')]"
+        },
+        "osProfile": {
+          "computername": "[parameters('dcvmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]",
+          "windowsConfiguration": {
+            "provisionVMAgent": true,
+            "enableAutomaticUpdates": true
+          },
+          "secrets": [],
+          "allowExtensionOperations": true
+        },
+        "storageProfile": {
+          "osDisk": {
+            "osType": "Windows",
+            "name": "[variables('dc1OSDiskName')]",
+            "caching": "ReadWrite",
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "[variables('diskType')]"
+            }
+          },
+          "imageReference": "[variables('imageReference')]"
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces',variables('dc1nicName'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": false
+          }
+        },
+        "licenseType": "Windows_Server"
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "name": "[concat(parameters('dcvmName'),'/Microsoft.Powershell.DSC')]",
+      "apiVersion": "2018-10-01",
+      "location": "[parameters('location')]",
+      "dependsOn": [ "[concat('Microsoft.Compute/virtualMachines/', parameters('dcvmName'))]" ],
+      "properties": {
+        "publisher": "Microsoft.Powershell",
+        "type": "DSC",
+        "typeHandlerVersion": "2.76",
+        "autoUpgradeMinorVersion": true,
+        "settings": {
+          "wmfVersion": "latest",
+          "configuration": {
+            "url": "[parameters('configZipFileUrl')]",
+            "script": "[parameters('configScriptFileName')]",
+            "function": "[parameters('configFunctionName')]"
+          },
+          "configurationArguments": {
+            "DiskNumber": 0,
+            "domainName": "[parameters('domainName')]",
+            "DriveLetter": "C"
+          },
+          "configurationData": {
+          },
+          "privacy": {
+            "dataCollection": "Enable"
+          }
+        },
+        "protectedSettings": {
+          "configurationArguments": {
+            "Credential": {
+              "userName": "[parameters('AdminUsername')]",
+              "password": "[parameters('AdminPassword')]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "2018-06-01",
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[parameters('jumpboxvmName')]",
+      "location": "[variables('location')]",
+      "dependsOn": [
+        "[concat('Microsoft.Network/networkInterfaces/', variables('jumpbox1nicName'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[variables('vmSize')]"
+        },
+        "osProfile": {
+          "computername": "[parameters('jumpboxvmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]",
+          "windowsConfiguration": {
+            "provisionVMAgent": true,
+            "enableAutomaticUpdates": true
+          },
+          "secrets": [],
+          "allowExtensionOperations": true
+        },
+        "storageProfile": {
+          "osDisk": {
+            "osType": "Windows",
+            "name": "[variables('jumpbox1OSDiskName')]",
+            "caching": "ReadWrite",
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "[variables('diskType')]"
+            }
+          },
+          "imageReference": "[variables('imageReference')]"
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces',variables('jumpbox1nicName'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": false
+          }
+        },
+        "licenseType": "Windows_Server"
+      }
+    },
+    {
+      "apiVersion": "2018-06-01",
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[parameters('appsrv1vmName')]",
+      "location": "[variables('location')]",
+      "dependsOn": [
+        "[concat('Microsoft.Network/networkInterfaces/', variables('appsrv1nicName'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[variables('vmSize')]"
+        },
+        "osProfile": {
+          "computername": "[parameters('jumpboxvmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]",
+          "windowsConfiguration": {
+            "provisionVMAgent": true,
+            "enableAutomaticUpdates": true
+          },
+          "secrets": [],
+          "allowExtensionOperations": true
+        },
+        "storageProfile": {
+          "osDisk": {
+            "osType": "Windows",
+            "name": "[variables('appsrv1OSDiskName')]",
+            "caching": "ReadWrite",
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "[variables('diskType')]"
+            }
+          },
+          "imageReference": "[variables('imageReference')]"
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces',variables('appsrv1nicName'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": false
+          }
+        },
+        "licenseType": "Windows_Server"
+      }
+    }
+  ]
+ }
